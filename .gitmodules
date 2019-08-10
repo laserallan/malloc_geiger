@@ -1,0 +1,3 @@
+[submodule "src/thirdparty/gperftools"]
+	path = src/thirdparty/gperftools
+	url = https://github.com/gperftools/gperftools.git
