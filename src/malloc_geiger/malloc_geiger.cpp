@@ -1,19 +1,104 @@
 #include "malloc_geiger.h"
-#define CUTE_SOUND_IMPLEMENTATION
-#include <cute_sound.h>
 #include <preamble_patcher.h>
 #include <base/commandlineflags.h>
 #include <windows.h>
 #include <random>
 #include <chrono>
+#include <exception>
 
-using namespace std::chrono;
+// Anonymous namespace representing things that are meant to be local to this file
 namespace
 {
+// Define to make sure both declarations and definitions of cute sound is
+// included
+#define CUTE_SOUND_IMPLEMENTATION
+#include <cute_sound.h>
+#include "geiger_wav.h"
+using namespace std::chrono;
+
+// Types for free and malloc function pointers
 typedef void *(__cdecl *malloc_ptr)(size_t);
 typedef void(__cdecl *free_ptr)(void *);
 
-struct Globals
+// Makes classes fail if attempting to copy them
+class Noncopyable
+{
+public:
+    Noncopyable() = default;
+    ~Noncopyable() = default;
+
+private:
+    Noncopyable(const Noncopyable &) = delete;
+    Noncopyable &operator=(const Noncopyable &) = delete;
+};
+
+// Exception class for patching errors
+class PatchException : public std::exception
+{
+public:
+    MG_Status code;
+    PatchException(MG_Status _code) : std::exception(),
+                                      code(_code)
+    {
+    }
+};
+
+// RIAA lock for windows critical sections
+struct Lock : public Noncopyable
+{
+private:
+    CRITICAL_SECTION *cs;
+
+public:
+    Lock(CRITICAL_SECTION *_cs) : cs(_cs)
+    {
+        EnterCriticalSection(cs);
+    }
+    ~Lock()
+    {
+        LeaveCriticalSection(cs);
+    }
+};
+
+// Class helping out playing clicks from a wav file
+struct ClickSound
+    : public Noncopyable
+{
+private:
+    std::shared_ptr<cs_context_t> ctx;
+    cs_loaded_sound_t voice_audio;
+    cs_playing_sound_t voice_instance;
+
+public:
+    ClickSound()
+    {
+        HWND hwnd = GetConsoleWindow();
+        ctx = std::shared_ptr<cs_context_t>(cs_make_context(hwnd, 48000, 15, 5, 0), cs_shutdown_context);
+        //voice_audio = cs_load_wav(geiger_wav_file);
+        cs_read_mem_wav(geiger_sound, sizeof(geiger_sound), &voice_audio);
+        voice_instance = cs_make_playing_sound(&voice_audio);
+        cs_spawn_mix_thread(ctx.get());
+    }
+    ~ClickSound()
+    {
+        cs_free_sound(&voice_audio);
+    }
+    void addClick()
+    {
+        cs_insert_sound(ctx.get(), &voice_instance);
+    }
+};
+
+// Declarations for replacement malloc and free
+extern "C"
+{
+    void *replacement_malloc(size_t size);
+    void replacement_free(void *ptr);
+}
+
+// Handles all data and installation/uninstallation of
+// malloc handler
+struct MallocGeigerHandler : public Noncopyable
 {
     CRITICAL_SECTION mutex;
     std::shared_ptr<std::random_device> rd; //Will be used to obtain a seed for the random number engine
@@ -26,98 +111,119 @@ struct Globals
     duration<size_t, std::micro> interval;
     high_resolution_clock::time_point last_malloc_time;
     size_t malloc_count = 0;
-    cs_context_t *ctx;
-    cs_loaded_sound_t voice_audio;
-    cs_playing_sound_t voice_instance;
-    Globals(size_t _saturation_rate, size_t _interval) : saturation_rate(_saturation_rate),
-                                                         interval(duration<size_t, std::micro>(interval))
+    ClickSound sound;
+    MallocGeigerHandler(size_t _saturation_rate, size_t _interval, const char *_geiger_wav_file) : saturation_rate(_saturation_rate),
+                                                                                                   interval(duration<size_t, std::micro>(_interval)),
+                                                                                                   last_malloc_time(high_resolution_clock::now())
     {
         InitializeCriticalSection(&mutex);
+        // Set up random generator
         rd = std::make_shared<std::random_device>();
         gen = std::make_shared<std::mt19937>((*rd)());
         dis = std::make_shared<std::uniform_real_distribution<>>(0.0f, 1.0f);
+        using namespace sidestep;
+        // Patch malloc and free
+        SideStepError err = PreamblePatcher::Patch(malloc, replacement_malloc, &old_malloc);
+        if (err != SIDESTEP_SUCCESS)
+        {
+            throw PatchException(MG_STATUS_FAILED_TO_PATCH);
+        }
+        err = PreamblePatcher::Patch(free, replacement_free, &old_free);
+        if (err != SIDESTEP_SUCCESS)
+        {
+            throw PatchException(MG_STATUS_FAILED_TO_PATCH);
+        }
     }
-    virtual ~Globals()
+    ~MallocGeigerHandler()
     {
+        using namespace sidestep;
+        {
+            // Restore malloc and free
+            malloc_ptr ignore_malloc = 0;
+            free_ptr ignore_free = 0;
+            Lock _l(&mutex);
+            PreamblePatcher::Patch(malloc, old_malloc, &ignore_malloc);
+            PreamblePatcher::Patch(free, old_free, &ignore_free);
+        }
         DeleteCriticalSection(&mutex);
     }
 };
-std::unique_ptr<Globals> globals;
+std::unique_ptr<MallocGeigerHandler> g_malloc_geiger_handler;
 }; // namespace
 
 extern "C"
 {
+    // Definition of clicking malloc
     void *replacement_malloc(size_t size)
     {
         void *res = 0;
-        EnterCriticalSection(&globals->mutex);
+        // Lock our mutex to make sure no other thread is
+        // in here when handling mallocing
+        Lock _l(&g_malloc_geiger_handler->mutex);
         high_resolution_clock::time_point malloc_time = high_resolution_clock::now();
-        if (globals->enabled && duration_cast<microseconds>(malloc_time - globals->last_malloc_time) > globals->interval)
+        if (g_malloc_geiger_handler->enabled && duration_cast<microseconds>(malloc_time - g_malloc_geiger_handler->last_malloc_time) > g_malloc_geiger_handler->interval)
         {
-            globals->last_malloc_time = malloc_time;
-            assert(globals->old_malloc != 0);
-            float rd = (*globals->dis)(*globals->gen);
-            if (rd < (float)globals->malloc_count / (float)globals->saturation_rate)
+            // Custom allocator is enabled and a full cycle has passed since last time we clicked
+            g_malloc_geiger_handler->last_malloc_time = malloc_time;
+            assert(g_malloc_geiger_handler->old_malloc != 0);
+            // Generate a random number and see to generate a click in proportion to
+            // malloc_count / saturation_rate for this cycle
+            float rd = (*g_malloc_geiger_handler->dis)(*g_malloc_geiger_handler->gen);
+            if (rd < (float)g_malloc_geiger_handler->malloc_count / (float)g_malloc_geiger_handler->saturation_rate)
             {
-                cs_insert_sound(globals->ctx, &globals->voice_instance);
-                globals->malloc_count = 0;
+                // Decided it's time to play a click
+                // Disable allocator while playing sound
+                g_malloc_geiger_handler->enabled = false;
+
+                // Play a click sound
+                g_malloc_geiger_handler->sound.addClick();
+
+                // Enable allocator again
+                g_malloc_geiger_handler->enabled = true;
             }
-            res = globals->old_malloc(size);
+            // reset malloc_count for next cycle
+            g_malloc_geiger_handler->malloc_count = 0;
         }
         else
         {
-            res = globals->old_malloc(size);
+            // Time cycle has not passed, increase the malloc_count for this cycle
+            g_malloc_geiger_handler->malloc_count++;
         }
-        globals->malloc_count++;
-        LeaveCriticalSection(&globals->mutex);
-        return res;
+        // Return malloc from the original malloc function
+        return g_malloc_geiger_handler->old_malloc(size);
     }
+    // Definition of replacement free
     void replacement_free(void *ptr)
     {
-        EnterCriticalSection(&globals->mutex);
-        globals->old_free(ptr);
-        LeaveCriticalSection(&globals->mutex);
+        Lock _l(&g_malloc_geiger_handler->mutex);
+        g_malloc_geiger_handler->old_free(ptr);
     }
 
+    // Public API for installing malloc geiger
     MALLOC_GEIGER_API MG_Status install_malloc_geiger(size_t saturation_rate, size_t interval)
     {
-        HWND hwnd = GetConsoleWindow();
-        globals = std::make_unique<Globals>(saturation_rate, interval);
-        globals->ctx = cs_make_context(hwnd, 48000, 15, 5, 0);
-        globals->voice_audio = cs_load_wav("c:\\work\\code\\malloc_geiger\\data\\geiger1.wav");
-        globals->voice_instance = cs_make_playing_sound(&globals->voice_audio);
-        cs_spawn_mix_thread(globals->ctx);
-        printf("demo.wav has a sample rate of %d Hz.\n", globals->voice_audio.sample_rate);
-
-        using namespace sidestep;
-        SideStepError err = PreamblePatcher::Patch(malloc, replacement_malloc, &globals->old_malloc);
-        if (err != SIDESTEP_SUCCESS)
+        try
         {
-            return MG_STATUS_FAILED_TO_PATCH;
+            g_malloc_geiger_handler = std::make_unique<MallocGeigerHandler>(saturation_rate, interval, "c:\\work\\code\\malloc_geiger\\data\\geiger1.wav");
         }
-        err = PreamblePatcher::Patch(free, replacement_free, &globals->old_free);
-        if (err != SIDESTEP_SUCCESS)
+        catch (PatchException &e)
         {
-            return MG_STATUS_FAILED_TO_PATCH;
+            // Patching failed
+            return e.code;
         }
-        globals->saturation_rate = saturation_rate;
-        globals->interval = duration<size_t, std::micro>(interval);
-        globals->last_malloc_time = high_resolution_clock::now();
+        catch (...)
+        {
+            // Some other exception was thrown when initializing
+            return MG_STATUS_UNKNOWN_ERROR;
+        }
         return MG_STATUS_SUCCESS;
     }
+
+    // Public API for uninstalling malloc geiger
     MALLOC_GEIGER_API MG_Status uninstall_malloc_geiger()
     {
-        using namespace sidestep;
-        malloc_ptr ignore_malloc = 0;
-        free_ptr ignore_free = 0;
-        EnterCriticalSection(&globals->mutex);
-        PreamblePatcher::Patch(malloc, globals->old_malloc, &ignore_malloc);
-        PreamblePatcher::Patch(free, globals->old_free, &ignore_free);
-        LeaveCriticalSection(&globals->mutex);
-
-        cs_free_sound(&globals->voice_audio);
-        cs_shutdown_context(globals->ctx);
-        globals.reset();
+        // Kill the g_malloc_geiger_handler to delete all data and overrides
+        g_malloc_geiger_handler.reset();
         return MG_STATUS_SUCCESS;
     }
 } // namespace
