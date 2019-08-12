@@ -6,13 +6,16 @@
 #include <chrono>
 #include <exception>
 
-// Anonymous namespace representing things that are meant to be local to this file
+// Anonymous namespace representing things that are meant to be
+// local to this file
 namespace
 {
 // Define to make sure both declarations and definitions of cute sound is
 // included
 #define CUTE_SOUND_IMPLEMENTATION
 #include <cute_sound.h>
+
+// Include geiger wav file data
 #include "geiger_wav.h"
 using namespace std::chrono;
 
@@ -112,9 +115,9 @@ struct MallocGeigerHandler : public Noncopyable
     high_resolution_clock::time_point last_malloc_time;
     size_t malloc_count = 0;
     ClickSound sound;
-    MallocGeigerHandler(size_t _saturation_rate, size_t _interval, const char *_geiger_wav_file) : saturation_rate(_saturation_rate),
-                                                                                                   interval(duration<size_t, std::micro>(_interval)),
-                                                                                                   last_malloc_time(high_resolution_clock::now())
+    MallocGeigerHandler(size_t _saturation_rate, size_t _interval) : saturation_rate(_saturation_rate),
+                                                                     interval(duration<size_t, std::micro>(_interval)),
+                                                                     last_malloc_time(high_resolution_clock::now())
     {
         InitializeCriticalSection(&mutex);
         // Set up random generator
@@ -136,14 +139,14 @@ struct MallocGeigerHandler : public Noncopyable
     }
     ~MallocGeigerHandler()
     {
-        using namespace sidestep;
         {
+            using namespace sidestep;
+            Lock _l(&mutex);
             // Restore malloc and free
             malloc_ptr ignore_malloc = 0;
             free_ptr ignore_free = 0;
-            Lock _l(&mutex);
-            PreamblePatcher::Patch(malloc, old_malloc, &ignore_malloc);
-            PreamblePatcher::Patch(free, old_free, &ignore_free);
+            PreamblePatcher::Unpatch(malloc, replacement_malloc, old_malloc);
+            PreamblePatcher::Unpatch(free, replacement_free, old_free);
         }
         DeleteCriticalSection(&mutex);
     }
@@ -202,9 +205,13 @@ extern "C"
     // Public API for installing malloc geiger
     MALLOC_GEIGER_API MG_Status install_malloc_geiger(size_t saturation_rate, size_t interval)
     {
+        if (g_malloc_geiger_handler)
+        {
+            return MG_STATUS_ALREADY_RUNNING;
+        }
         try
         {
-            g_malloc_geiger_handler = std::make_unique<MallocGeigerHandler>(saturation_rate, interval, "c:\\work\\code\\malloc_geiger\\data\\geiger1.wav");
+            g_malloc_geiger_handler = std::make_unique<MallocGeigerHandler>(saturation_rate, interval);
         }
         catch (PatchException &e)
         {

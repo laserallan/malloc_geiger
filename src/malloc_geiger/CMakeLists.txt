@@ -12,5 +12,6 @@ add_library(malloc_geiger SHARED malloc_geiger.cpp
                                  ${gperf_dir}/base/logging.cc
                                  ${gperf_dir}/windows/port.cc)
 target_compile_definitions(malloc_geiger PRIVATE MALLOC_GEIGER_EXPORTS)
-target_include_directories(malloc_geiger PRIVATE ${gperf_dir} ${gperf_dir}/windows ${cute_dir})
+target_include_directories(malloc_geiger PUBLIC ${gperf_dir} ${gperf_dir}/windows ${cute_dir})
+set_target_properties(malloc_geiger PROPERTIES PUBLIC_HEADER "malloc_geiger.h")
 install(TARGETS malloc_geiger)
