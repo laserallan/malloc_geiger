@@ -1,22 +1,44 @@
-#include <windows.h>
-#include <mmsystem.h>
 #include <malloc_geiger.h>
-#include <iostream>
+#include <windows.h>
 #include <vector>
+#include <chrono>
+#include <thread>
 
-int main() {
-    if(install_malloc_geiger(10000, 1000) != MG_STATUS_SUCCESS) {
-        std::cerr << "Failed to install malloc geiger" << std::endl;
+int main()
+{
+    // Full intensity at 1000 mallocs per second
+    const size_t saturation = 1000;
+    // 10000us between each click at saturation -> maximum 100 clicks per second
+    const size_t us_per_click = 10000;
+    if (install_malloc_geiger(saturation, us_per_click) != MG_STATUS_SUCCESS)
+    {
+        printf("Failed to install malloc geiger\n");
         return 1;
     }
-    std::vector<int> test_vec;
-    for(int i = 0; i < 1000000; ++i) {
-        test_vec.push_back(i);
+    size_t current_mallocs = 0;
+    // Gradually increase number of mallocs per cycle until we hit saturation
+    while (true)
+    {
+        using namespace std::chrono_literals;
+        printf("\33[2K\rMallocs per click_cycle %zd, saturation: %zd", current_mallocs, saturation);
+        for (size_t i = 0; i < current_mallocs; ++i)
+        {
+            void *p = malloc(1024);
+            free(p);
+        }
+        if (GetAsyncKeyState(VK_ESCAPE))
+        {
+            // Break when the user hits escape
+            break;
+        }
+        // Assuming the mallocs are moderatlye fast, sleep for one click cycle
+        std::this_thread::sleep_for(std::chrono::duration<size_t, std::micro>(us_per_click));
+        current_mallocs = (current_mallocs + 1) % (saturation + 10);
     }
-    std::cout << test_vec.size() << std::endl;
 
-    if(uninstall_malloc_geiger() != MG_STATUS_SUCCESS) {
-        std::cerr << "Failed to uninstall malloc geiger" << std::endl;
+    if (uninstall_malloc_geiger() != MG_STATUS_SUCCESS)
+    {
+        printf("Failed to uninstall malloc geiger\n");
         return 1;
     }
     return 0;
