@@ -1,5 +1,5 @@
 # Malloc Geiger
-Malloc geiger is a hook for the malloc that plays geiger counter blips in proportion to the amound of calls to malloc as a way of knowing what an application does. It's largely meant as a joke so don't expect it to work properly in challenging situations. It only looks at malloc at this point so it won't react to any other way an application may allocate memory.
+Malloc geiger is a hook for the malloc that plays geiger counter blips in proportion to the amound of calls to malloc as a way of knowing what an application does. It's largely meant as a joke so don't expect it to work properly in every situation. It only looks at malloc at this point so it won't react to any other way an application may allocate memory.
 
 ## API
 The API is minimal:
@@ -66,10 +66,12 @@ if res != 0:
 
 ## Caveats
 Too many to mention all. Here are some:
+* With the current setup where it builds to a dll it requires the application using it to use the dynamic runtime library. If using it in an application with static runtime library it needs to be linked statically.
 * It only overrides malloc, any allocation not passing through malloc is going to be missed.
 * There is a potential deadlock in the malloc functions since there is a lock in the sound code too. Have not invested time in figuring out whether it can happen and properly avoided.
 * It overrides the malloc the dll uses. If the host application uses a different runtime library you need to configure the build settings to match for it to work.
-
+* Probably a million other things
+  
 ## Credits
 The application works thanks to two external libraries
 ### gperftools
