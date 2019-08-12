@@ -17,6 +17,14 @@ MALLOC_GEIGER_API MG_Status install_malloc_geiger(size_t saturation_rate, size_t
 // Uninstalls the geiger clicking malloc handler
 MALLOC_GEIGER_API MG_Status uninstall_malloc_geiger();
 ```
+A typical initialization looks something like this:
+```cpp
+if(install_malloc_geiger(1000, 10000) != MG_STATUS_SUCCESS) {
+    // error handling
+}
+```
+
+This call should ideally before the application has started any other threads to make sure the patching doesn't happen while another thread is doing a call to malloc or free.
 
 ## Compatiblity
 Malloc Geiger only works on Windows at this point. It has been tested on Win64 using visual studio 2017
@@ -46,7 +54,7 @@ installed/bin/test_app.exe
 ```
 
 ## Python injection
-Since the library is built as a dll and does dynamic patching of the malloc functions it can be installed in a running application. If the application has a python interpreter it's an excellent vector for making it happen.
+Since the library is built as a dll and does dynamic patching of the malloc functions it can be installed in a running application. If the application has a python interpreter it's an excellent vector for making it happen. Note that this probably only works if the runtime libraries matches between the way geiger_malloc was built and the host application was built.
 Here is a sample script for installing it in an application
 ```python
 import ctypes
@@ -56,8 +64,14 @@ if res != 0:
     raise BaseException('Failed to install malloc geiger')
 ```
 
+## Caveats
+Too many to mention all. Here are some:
+* It only overrides malloc, any allocation not passing through malloc is going to be missed.
+* There is a potential deadlock in the malloc functions since there is a lock in the sound code too. Have not invested time in figuring out whether it can happen and properly avoided.
+* It overrides the malloc the dll uses. If the host application uses a different runtime library you need to configure the build settings to match for it to work.
+
 ## Credits
-The application uses two external libraries
+The application works thanks to two external libraries
 ### gperftools
 A small part of gperftools is used to override the malloc/free functions at runtime
 
@@ -67,6 +81,7 @@ https://github.com/gperftools/gperftools
 The cute_sound library is used to play sounds.
 
 https://github.com/RandyGaul/cute_headers/
+
 ### Geiger sound
 Cut out from a sound found at wikipedia, here are the credits for it
 https://upload.wikimedia.org/wikipedia/commons/5/58/Geiger_calm.ogg
