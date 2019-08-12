@@ -15,7 +15,6 @@ int main()
         printf("Failed to install malloc geiger\n");
         return 1;
     }
-
     size_t current_mallocs = 0;
     // Gradually increase number of mallocs per cycle until we hit saturation
     while (true)

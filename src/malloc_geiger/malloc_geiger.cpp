@@ -36,12 +36,12 @@ private:
 };
 
 // Exception class for patching errors
-class PatchException : public std::exception
+class InitException : public std::exception
 {
 public:
     MG_Status code;
-    PatchException(MG_Status _code) : std::exception(),
-                                      code(_code)
+    InitException(MG_Status _code) : std::exception(),
+                                     code(_code)
     {
     }
 };
@@ -76,8 +76,15 @@ public:
     ClickSound()
     {
         HWND hwnd = GetConsoleWindow();
+        if (!hwnd)
+        {
+            hwnd = GetActiveWindow();
+        }
+        if (!hwnd)
+        {
+            throw InitException(MG_STATUS_CANT_GET_HWND);
+        }
         ctx = std::shared_ptr<cs_context_t>(cs_make_context(hwnd, 48000, 15, 5, 0), cs_shutdown_context);
-        //voice_audio = cs_load_wav(geiger_wav_file);
         cs_read_mem_wav(geiger_sound, sizeof(geiger_sound), &voice_audio);
         voice_instance = cs_make_playing_sound(&voice_audio);
         cs_spawn_mix_thread(ctx.get());
@@ -129,12 +136,12 @@ struct MallocGeigerHandler : public Noncopyable
         SideStepError err = PreamblePatcher::Patch(malloc, replacement_malloc, &old_malloc);
         if (err != SIDESTEP_SUCCESS)
         {
-            throw PatchException(MG_STATUS_FAILED_TO_PATCH);
+            throw InitException(MG_STATUS_FAILED_TO_PATCH);
         }
         err = PreamblePatcher::Patch(free, replacement_free, &old_free);
         if (err != SIDESTEP_SUCCESS)
         {
-            throw PatchException(MG_STATUS_FAILED_TO_PATCH);
+            throw InitException(MG_STATUS_FAILED_TO_PATCH);
         }
     }
     ~MallocGeigerHandler()
@@ -213,7 +220,8 @@ extern "C"
         {
             g_malloc_geiger_handler = std::make_unique<MallocGeigerHandler>(saturation_rate, interval);
         }
-        catch (PatchException &e)
+        catch (InitException
+                   &e)
         {
             // Patching failed
             return e.code;
