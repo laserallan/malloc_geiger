@@ -27,7 +27,8 @@ extern "C"
     // lower values allows more extreme rates of clicking. A good start value tends to be 10000 meaning
     // a maximum of 100 clicks per second when saturating the amount of allocations
     //
-    // The probability of a click happening in each interval is min(number_of_clicks/saturation_rate, 1.0)
+    // The probability of a click happening in each interval is 
+    // min(number_of_mallocs_in_interval/saturation_rate, 1.0)
     MALLOC_GEIGER_API MG_Status install_malloc_geiger(size_t saturation_rate, size_t interval);
 
     // Uninstalls the geiger clicking malloc handler
