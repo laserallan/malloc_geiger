@@ -1,7 +1,7 @@
 # Malloc Geiger
 Malloc geiger is a hook for malloc that plays geiger counter blips in proportion to the amount of calls to malloc as a way of knowing what an application does. It's largely meant as a joke so don't expect it to work properly in every situation. It only looks at malloc at this point so it won't react to any other way an application may allocate memory.
 
-A video of malloc_geiger in action can be found on [here](https://youtu.be/7vn6aGgLKfQ)
+A video of malloc_geiger in action can be found [here](https://youtu.be/7vn6aGgLKfQ)
 
 ## API
 The API is minimal:
