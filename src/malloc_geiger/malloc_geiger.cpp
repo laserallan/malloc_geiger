@@ -5,6 +5,7 @@
 #include <random>
 #include <chrono>
 #include <exception>
+#include <memory>
 
 // Anonymous namespace representing things that are meant to be
 // local to this file
